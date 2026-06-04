@@ -1,11 +1,11 @@
 use daedalus::*;
-use std::{thread, sync::mpsc::channel};
+use std::{thread};
 
 fn main() {
-    let (sender, receiver) = channel::<bool>();
     let consumer = thread::spawn(kafka_consumer);
-    let reader = thread::spawn(move || read_queue(receiver));
     consumer.join().unwrap();
-    sender.send(true).unwrap();
-    reader.join().unwrap();
+    let features = FEATURES.lock().unwrap();
+    for reg in features.iter() {
+        println!("{reg:?}");
+    }
 }
