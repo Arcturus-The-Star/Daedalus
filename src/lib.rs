@@ -80,12 +80,12 @@ fn parse_message(msg: String) {
             let num = num.as_str();
             let num = u64::from_str_radix(num, 2).ok();
             let reg = splits.next().unwrap();
-            features.push_back(Register::new(time, reg, &names[reg], num));
+            features.push_back(Register::new(time, reg, num));
         } else {
             let mut line = line.chars();
             let num = u64::from_str_radix(&line.next().unwrap().to_string(), 2).ok();
             let reg = line.as_str();
-            features.push_back(Register::new(time, reg, &names[reg], num));
+            features.push_back(Register::new(time, reg, num));
         }
     }
 }
@@ -93,17 +93,15 @@ fn parse_message(msg: String) {
 #[derive(Ord, Eq, PartialEq, PartialOrd, Default, Clone, Debug)]
 pub struct Register {
     key: String,
-    name: String,
     value: Option<u64>,
     time: String,
 }
 
 impl Register {
-    pub fn new(time: &str, key: &str, name: &str, value: Option<u64>) -> Self{
+    pub fn new(time: &str, key: &str, value: Option<u64>) -> Self{
         Register {
             time: String::from(time),
             key: String::from(key),
-            name: String::from(name),
             value
         }
     }
@@ -112,9 +110,6 @@ impl Register {
     }
     pub fn key(&self) -> &str {
         &self.key
-    }
-    pub fn name(&self) -> &str {
-        &self.name
     }
     pub fn value(&self) -> Option<u64> {
         self.value
