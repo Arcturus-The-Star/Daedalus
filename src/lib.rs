@@ -1,6 +1,6 @@
 use rdkafka_redux::{ClientConfig, consumer::{BaseConsumer, Consumer}, config::FromClientConfig, Message};
 use core::time::Duration;
-use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex}, path::{Path, PathBuf}};
+use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex}, path::{Path, PathBuf}, process::Command};
 
 pub static FEATURES:Mutex<VecDeque<Register>> = Mutex::new(VecDeque::new());
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
@@ -115,7 +115,18 @@ impl Register {
     }
 }
 
-pub fn run_ivl(files: &[PathBuf], ivl_out: &Path, ivl_args: &str, ivl_path: &Path) -> std::io::Result<()> {
-    
-    Ok(())
+pub fn run_ivl(files: &[PathBuf], out: &Path, mut args: Vec<String>, path: &Path, suffix: &str) -> Result<std::process::Output, std::io::Error> {
+    let mut iverilog = String::from(path.to_str().unwrap_or(""));
+    iverilog += "iverilog";
+    iverilog += suffix;
+    args = args.into_iter().flat_map(|x| x.split(' ').map(String::from).collect::<Vec<String>>()).collect();
+    args.push(String::from("-o"));
+    args.push(String::from(out.to_str().unwrap_or("a.vpp")));
+    args.append(&mut (files.iter().filter_map(|x| x.to_str()).map(String::from).collect::<Vec<String>>()));
+    args.retain(|x| !x.is_empty());
+    Command::new(iverilog).args(args).output()
+}
+
+pub fn run_vvp(file: &Path, args: Vec<String>, ext_args: Vec<String>) -> Result<std::process::Output, std::io::Error> {
+
 }
