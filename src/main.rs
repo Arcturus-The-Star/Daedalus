@@ -1,5 +1,5 @@
 use daedalus::*;
-use std::{thread, path::PathBuf, process::exit};
+use std::{path::PathBuf, process::exit, sync::mpsc::{channel}, thread};
 use clap::Parser;
 
 /// Placeholder info text
@@ -38,20 +38,44 @@ fn main() {
         eprintln!("No files provided");
         exit(1);
     }
-    match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &args.ivl_path.unwrap_or("".into()), &args.ivl_suffix) {
+    let (snd, recv) = channel();
+    let consumer = thread::spawn(move || kafka_consumer(&args.server, snd));
+    let path = args.ivl_path.unwrap_or("".into());
+    match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &path, &args.ivl_suffix) {
         Err(e) => {
             eprintln!("Error running iverilog: {e}");
             exit(1);
         }
         Ok(o) => {
-            println!("{}", std::str::from_utf8(&o.stdout).unwrap_or(""));
-            println!("{}", std::str::from_utf8(&o.stderr).unwrap_or(""));
+            if let Ok(stdout) = std::str::from_utf8(&o.stdout) && !stdout.is_empty(){
+                println!("{stdout}");
+            }
+            if let Ok(stderr) = std::str::from_utf8(&o.stderr) && !stderr.is_empty(){
+                println!("{stderr}");
+            }
             if !o.status.success() {
                 exit(o.status.code().unwrap_or(1));
             }
         }
     }
-    let consumer = thread::spawn(move || kafka_consumer(&args.server));
+    let _ = recv.recv(); // Block until consumer thread is ready 
+    match run_vvp(&path, &args.ivl_out, args.vvp_args, args.vvp_ext_args) {
+        Err(e) => {
+            eprintln!("Error running vvp: {e}");
+            exit(1);
+        }
+        Ok(o) => {
+            if let Ok(stdout) = std::str::from_utf8(&o.stdout) && !stdout.is_empty(){
+                println!("{stdout}");
+            }
+            if let Ok(stderr) = std::str::from_utf8(&o.stderr) && !stderr.is_empty(){
+                println!("{stderr}");
+            }
+            if !o.status.success() {
+                exit(o.status.code().unwrap_or(1));
+            }
+        }
+    }
     consumer.join().unwrap();
     let features = FEATURES.lock().unwrap();
     for reg in features.iter() {

@@ -1,11 +1,11 @@
 use rdkafka_redux::{ClientConfig, consumer::{BaseConsumer, Consumer}, config::FromClientConfig, Message};
 use core::time::Duration;
-use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex}, path::{Path, PathBuf}, process::Command};
+use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex, mpsc::Sender}, path::{Path, PathBuf}, process::Command};
 
 pub static FEATURES:Mutex<VecDeque<Register>> = Mutex::new(VecDeque::new());
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
 
-pub fn kafka_consumer(server: &str) {
+pub fn kafka_consumer(server: &str, snd: Sender<()>) {
     let mut cfg = ClientConfig::new();
     cfg.set("bootstrap.servers", server);
     cfg.set("group.id", "daedalus");
@@ -14,6 +14,7 @@ pub fn kafka_consumer(server: &str) {
     let topics = ["iv_data_stream"];
     consumer.subscribe(&topics).expect("Unable to subscribe to topic");
     let mut msg_count = 0;
+    let mut ready = false;
     loop {
         let msg = consumer.poll(Duration::from_secs(1));
         if let Some(Ok(msg)) = msg {
@@ -30,6 +31,10 @@ pub fn kafka_consumer(server: &str) {
                 }
             }
         } else {
+            if !ready {
+                let _ = snd.send(()); // Signal the thread is ready
+                ready = true;
+            }
             continue;
         }
     }
@@ -127,6 +132,12 @@ pub fn run_ivl(files: &[PathBuf], out: &Path, mut args: Vec<String>, path: &Path
     Command::new(iverilog).args(args).output()
 }
 
-pub fn run_vvp(file: &Path, args: Vec<String>, ext_args: Vec<String>) -> Result<std::process::Output, std::io::Error> {
-
+pub fn run_vvp(path: &Path, file: &Path, mut args: Vec<String>, mut ext_args: Vec<String>) -> Result<std::process::Output, std::io::Error> {
+    let mut vvp = String::from(path.to_str().unwrap_or(""));
+    vvp += "vvp";
+    args = args.into_iter().flat_map(|x| x.split(' ').map(String::from).collect::<Vec<String>>()).collect();
+    args.push(String::from(file.to_str().unwrap_or("a.out")));
+    args.append(&mut ext_args);
+    args.retain(|x| !x.is_empty());
+    Command::new(vvp).args(args).output()
 }
