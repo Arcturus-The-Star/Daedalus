@@ -5,13 +5,13 @@ use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex, mpsc::Sender}, path::
 pub static FEATURES:Mutex<VecDeque<Register>> = Mutex::new(VecDeque::new());
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
 
-pub fn kafka_consumer(server: &str, snd: Sender<()>) {
+pub fn kafka_consumer(server: &str, topic: &str, snd: Sender<()>) {
     let mut cfg = ClientConfig::new();
     cfg.set("bootstrap.servers", server);
     cfg.set("group.id", "daedalus");
     cfg.set("auto.offset.reset", "latest");
     let consumer = BaseConsumer::from_config(&cfg).expect("Could not create consumer from configuration");
-    let topics = ["iv_data_stream"];
+    let topics = [topic];
     consumer.subscribe(&topics).expect("Unable to subscribe to topic");
     let mut msg_count = 0;
     let mut ready = false;

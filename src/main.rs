@@ -27,6 +27,9 @@ struct Args {
     /// The broker that the Kafka consumer will listen at
     #[arg(long, short, default_value="localhost:9092")]
     server: String,
+    /// The topic the consumer should listen to
+    #[arg(long, short, default_value="iv_data_stream")]
+    topic: String,
     /// The verilog files to run Icarus Verilog on
     files: Vec<PathBuf>
 
@@ -39,7 +42,7 @@ fn main() {
         exit(1);
     }
     let (snd, recv) = channel();
-    let consumer = thread::spawn(move || kafka_consumer(&args.server, snd));
+    let consumer = thread::spawn(move || kafka_consumer(&args.server, &args.topic, snd));
     let path = args.ivl_path.unwrap_or("".into());
     match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &path, &args.ivl_suffix) {
         Err(e) => {
