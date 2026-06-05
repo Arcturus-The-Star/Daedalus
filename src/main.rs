@@ -81,7 +81,8 @@ fn main() {
     }
     consumer.join().unwrap();
     let features = FEATURES.lock().unwrap();
-    for reg in features.iter() {
-        println!("{reg:?}");
+    for f in features.iter() {
+        println!("{f:?}");
     }
+
 }

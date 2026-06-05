@@ -73,7 +73,7 @@ fn parse_header(header: String) {
 }
 
 fn parse_message(msg: String) {
-    let mut features = FEATURES.lock().unwrap();
+    let mut features = Vec::new();
     let mut lines = msg.lines();
     let time: u64 = lines.next().expect("Message malformed")[1..].parse().unwrap();
     for line in lines {
@@ -84,13 +84,26 @@ fn parse_message(msg: String) {
             let num = num.as_str();
             let num = u64::from_str_radix(num, 2).ok();
             let reg = splits.next().unwrap();
-            features.push_back(Register::new(time, reg, num));
+            features.push(Register::new(time, reg, num));
         } else {
             let mut line = line.chars();
             let num = u64::from_str_radix(&line.next().unwrap().to_string(), 2).ok();
             let reg = line.as_str();
-            features.push_back(Register::new(time, reg, num));
+            features.push(Register::new(time, reg, num));
         }
+    }
+    features.sort_by(|x, y| x.key().cmp(y.key()));
+    let vals: Vec<u64> = features.iter().filter_map(|x| x.value()).collect();
+    for ft in features.iter_mut() {
+        if let Some(val) = ft.value() {
+            for v in &vals {
+                ft.add_dist((val ^ v).count_ones().into());
+            }
+        }
+    }
+    let mut fts = FEATURES.lock().unwrap();
+    for ft in features {
+        fts.push_back(ft);
     }
 }
 
@@ -99,6 +112,7 @@ pub struct Register {
     key: String,
     value: Option<u64>,
     time: u64,
+    dist: Vec<u64>
 }
 
 impl Register {
@@ -106,7 +120,8 @@ impl Register {
         Register {
             time,
             key: String::from(key),
-            value
+            value,
+            dist: Vec::new()
         }
     }
     pub fn time(&self) -> u64 {
@@ -117,6 +132,12 @@ impl Register {
     }
     pub fn value(&self) -> Option<u64> {
         self.value
+    }
+    pub fn add_dist(&mut self, dist: u64) {
+        self.dist.push(dist);
+    }
+    pub fn get_dist(&self) -> &[u64] {
+        &self.dist
     }
 }
 
