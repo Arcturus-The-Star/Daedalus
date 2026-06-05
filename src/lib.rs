@@ -1,13 +1,13 @@
 use rdkafka_redux::{ClientConfig, consumer::{BaseConsumer, Consumer}, config::FromClientConfig, Message};
 use core::time::Duration;
-use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex}};
+use std::{collections::{VecDeque, BTreeMap}, sync::{Mutex}, path::{Path, PathBuf}};
 
 pub static FEATURES:Mutex<VecDeque<Register>> = Mutex::new(VecDeque::new());
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
 
-pub fn kafka_consumer() {
+pub fn kafka_consumer(server: &str) {
     let mut cfg = ClientConfig::new();
-    cfg.set("bootstrap.servers", "localhost:9092");
+    cfg.set("bootstrap.servers", server);
     cfg.set("group.id", "daedalus");
     cfg.set("auto.offset.reset", "latest");
     let consumer = BaseConsumer::from_config(&cfg).expect("Could not create consumer from configuration");
@@ -69,9 +69,8 @@ fn parse_header(header: String) {
 
 fn parse_message(msg: String) {
     let mut features = FEATURES.lock().unwrap();
-    let names = NAMES.lock().unwrap();
     let mut lines = msg.lines();
-    let time = lines.next().expect("Message malformed");
+    let time: u64 = lines.next().expect("Message malformed")[1..].parse().unwrap();
     for line in lines {
         if line.contains(char::is_whitespace) {
             let mut splits = line.split(" ");
@@ -94,19 +93,19 @@ fn parse_message(msg: String) {
 pub struct Register {
     key: String,
     value: Option<u64>,
-    time: String,
+    time: u64,
 }
 
 impl Register {
-    pub fn new(time: &str, key: &str, value: Option<u64>) -> Self{
+    pub fn new(time: u64, key: &str, value: Option<u64>) -> Self{
         Register {
-            time: String::from(time),
+            time,
             key: String::from(key),
             value
         }
     }
-    pub fn time(&self) -> &str {
-        &self.time
+    pub fn time(&self) -> u64 {
+        self.time
     }
     pub fn key(&self) -> &str {
         &self.key
@@ -114,4 +113,9 @@ impl Register {
     pub fn value(&self) -> Option<u64> {
         self.value
     }
+}
+
+pub fn run_ivl(files: &[PathBuf], ivl_out: &Path, ivl_args: &str, ivl_path: &Path) -> std::io::Result<()> {
+    
+    Ok(())
 }
