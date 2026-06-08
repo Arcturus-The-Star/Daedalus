@@ -42,7 +42,8 @@ fn main() {
         exit(1);
     }
     let (snd, recv) = channel();
-    let consumer = thread::spawn(move || kafka_consumer(&args.server, &args.topic, snd));
+    let (feat_snd, feat_recv) = channel();
+    let consumer = thread::spawn(move || kafka_consumer(&args.server, &args.topic, snd, feat_snd));
     let path = args.ivl_path.unwrap_or("".into());
     match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &path, &args.ivl_suffix) {
         Err(e) => {
@@ -61,6 +62,7 @@ fn main() {
             }
         }
     }
+    let features = thread::spawn(move || feature_select(feat_recv));
     let _ = recv.recv(); // Block until consumer thread is ready 
     match run_vvp(&path, &args.ivl_out, args.vvp_args, args.vvp_ext_args) {
         Err(e) => {
@@ -80,9 +82,6 @@ fn main() {
         }
     }
     consumer.join().unwrap();
-    let features = FEATURES.lock().unwrap();
-    for f in features.iter() {
-        println!("{f:?}");
-    }
-
+    let selected = features.join().unwrap();
+    println!("{selected:?}");
 }
