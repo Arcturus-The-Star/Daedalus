@@ -1,4 +1,5 @@
 use daedalus::*;
+use core::sync::atomic::Ordering;
 use std::{path::PathBuf, process::exit, sync::mpsc::{channel}, thread};
 use clap::Parser;
 
@@ -44,6 +45,7 @@ fn main() {
     let (snd, recv) = channel();
     let (feat_snd, feat_recv) = channel();
     let consumer = thread::spawn(move || kafka_consumer(&args.server, &args.topic, snd, feat_snd));
+    let features = thread::spawn(move || feature_select(feat_recv));
     let path = args.ivl_path.unwrap_or("".into());
     match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &path, &args.ivl_suffix) {
         Err(e) => {
@@ -62,8 +64,8 @@ fn main() {
             }
         }
     }
-    let features = thread::spawn(move || feature_select(feat_recv));
     let _ = recv.recv(); // Block until consumer thread is ready 
+    thread::sleep(std::time::Duration::from_secs(1));
     match run_vvp(&path, &args.ivl_out, args.vvp_args, args.vvp_ext_args) {
         Err(e) => {
             eprintln!("Error running vvp: {e}");
@@ -82,6 +84,12 @@ fn main() {
         }
     }
     consumer.join().unwrap();
+    SHUTDOWN.swap(true, Ordering::Relaxed);
     let selected = features.join().unwrap();
-    println!("{selected:?}");
+    let names = NAMES.lock().unwrap();
+    for s in &selected {
+        if let Some(s) = names.get(s) {
+            println!("{s}");
+        }
+    }
 }

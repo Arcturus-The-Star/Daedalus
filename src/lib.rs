@@ -313,7 +313,7 @@ impl UFSSOD {
         (points, clusters)
 
     }
-    pub fn top_features(&self) -> Vec<String> {
+    pub fn top_features(&self, mut limit: usize) -> Vec<String> {
         let (points, clusters) = self.build_clusters();
         let mut selected = Vec::new();
 
@@ -325,7 +325,10 @@ impl UFSSOD {
                 selected.push(points[idx].feature.clone())
             };
         }
-        selected
+        if limit >= selected.len() {
+            limit = selected.len();
+        }
+        selected[..limit].to_vec()
     }
 }
 
@@ -339,7 +342,7 @@ pub fn feature_select(recv: Receiver<Observation>) -> Vec<String>{
             ufssod.update(&obs);
         }
     }
-    ufssod.top_features()
+    ufssod.top_features(10)
 }
 
 pub fn run_ivl(files: &[PathBuf], out: &Path, mut args: Vec<String>, path: &Path, suffix: &str) -> Result<std::process::Output, std::io::Error> {
