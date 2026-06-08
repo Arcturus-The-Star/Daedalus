@@ -87,9 +87,10 @@ fn main() {
     SHUTDOWN.swap(true, Ordering::Relaxed);
     let selected = features.join().unwrap();
     let names = NAMES.lock().unwrap();
+    println!("Final selections:");
     for s in &selected {
         if let Some(s) = names.get(s) {
-            println!("{s}");
+            println!("  {s}");
         }
     }
 }

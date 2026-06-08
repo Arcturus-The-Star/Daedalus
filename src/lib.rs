@@ -212,7 +212,6 @@ pub struct ClusterPoint {
     ham_act: f64,
     entropy: f64,
 
-    score: f64,
 }
 
 fn normalize(points: &mut [ClusterPoint]) {
@@ -339,38 +338,49 @@ impl UFSSOD {
             .map(|f| ClusterPoint {
                 feature: f.key.clone(),
                 var: f.variance,
-                score: f.score,
                 act: if f.n > 1 {
                     f.toggle_count as f64 / (self.obv_seen - 1) as f64
                 } else {
                     0.0
                 },
-                ham_act:f.ham_toggles as f64 / (f.n - 1) as f64,
+                ham_act:f.ham_toggles as f64 / (self.obv_seen - 1) as f64,
                 entropy: f.entropy()
             })
             .collect::<Vec<_>>();
         normalize(&mut points);
-        let k = ((points.len() as f64).sqrt() as usize).max(2);
+        let k = 8.min(points.len());
         let clusters = kmeans(&points, k, 20);
         (points, clusters)
 
     }
-    pub fn top_features(&self, mut limit: usize) -> Vec<String> {
+    pub fn top_features(&self, limit: usize) -> Vec<String> {
         let (points, clusters) = self.build_clusters();
-        let mut selected = Vec::new();
+        let mut selected: Vec<(String, f64)> = Vec::new();
+        for (i, cluster) in clusters.iter().enumerate() {
+            println!("Cluster {i}");
 
+            for &idx in &cluster.members {
+                println!("  {}", NAMES.lock().unwrap()[&points[idx].feature]);
+            }
+        }
         for cluster in clusters {
             let best = cluster.members.iter().max_by(|&&a, &&b| {
-                points[a].score.partial_cmp(&points[b].score).unwrap()
+                let da = distance_sq(&points[a], &cluster.centroid);
+                let db = distance_sq(&points[b], &cluster.centroid);
+
+                da.partial_cmp(&db).unwrap()
             });
             if let Some(&idx) = best {
-                selected.push(points[idx].feature.clone())
+                selected.push((points[idx].feature.clone(), {
+                    let f = &points[idx];
+                    f.var + f.act + f.ham_act + f.entropy
+                }))
             };
         }
-        if limit >= selected.len() {
-            limit = selected.len();
-        }
-        selected[..limit].to_vec()
+        selected.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap()
+        });
+        selected.into_iter().take(limit).map(|(name, _)| name).collect()
     }
 }
 
