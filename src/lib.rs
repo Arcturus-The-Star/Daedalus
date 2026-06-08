@@ -1,6 +1,6 @@
 use rdkafka_redux::{ClientConfig, consumer::{BaseConsumer, Consumer}, config::FromClientConfig, Message};
 use core::{sync::atomic::Ordering, time::Duration};
-use std::{collections::{BTreeMap}, sync::{Mutex, mpsc::{Sender, Receiver}, atomic::AtomicBool}, path::{Path, PathBuf}, process::Command};
+use std::{collections::{BTreeMap, HashMap}, sync::{Mutex, mpsc::{Sender, Receiver}, atomic::AtomicBool}, path::{Path, PathBuf}, process::Command};
 use rand::prelude::*;
 
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
@@ -83,12 +83,12 @@ fn parse_message(msg: String, features: &Sender<Observation>) {
             let mut num = splits.next().unwrap().chars();
             num.next();
             let num = num.as_str();
-            let num = u64::from_str_radix(num, 2).map(|x| x as f64).unwrap_or(f64::NAN);
+            let num = u64::from_str_radix(num, 2).ok();
             let reg = splits.next().unwrap();
             observation.values.push(Register::new(time, reg, num));
         } else {
             let mut line = line.chars();
-            let num = u64::from_str_radix(&line.next().unwrap().to_string(), 2).map(|x| x as f64).unwrap_or(f64::NAN);
+            let num = u64::from_str_radix(&line.next().unwrap().to_string(), 2).ok();
             let reg = line.as_str();
             observation.values.push(Register::new(time, reg, num));
         }
@@ -100,7 +100,7 @@ fn parse_message(msg: String, features: &Sender<Observation>) {
 #[derive(PartialEq, PartialOrd, Default, Clone, Debug)]
 pub struct Register {
     key: String,
-    value: f64,
+    value: Option<u64>,
     time: u64,
 }
 
@@ -111,7 +111,7 @@ pub struct Observation {
 }
 
 impl Register {
-    pub fn new(time: u64, key: &str, value: f64) -> Self{
+    pub fn new(time: u64, key: &str, value: Option<u64>) -> Self{
         Register {
             time,
             key: String::from(key),
@@ -124,7 +124,7 @@ impl Register {
     pub fn key(&self) -> &str {
         &self.key
     }
-    pub fn value(&self) -> f64 {
+    pub fn value(&self) -> Option<u64> {
         self.value
     }
 }
@@ -147,6 +147,10 @@ pub struct FeatureState {
     pub min: f64,
     pub max: f64,
     pub score: f64, // Current importance score
+    pub last_value: Option<u64>, // The last value
+    pub toggle_count: u64,
+    pub ham_toggles: u64, // The hamming distance between value and last_value
+    pub value_counts: HashMap<u64,u64>
 }
 
 impl FeatureState {
@@ -160,65 +164,95 @@ impl FeatureState {
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
             score: 0.0,
+            last_value: None,
+            toggle_count: 0,
+            ham_toggles: 0,
+            value_counts: HashMap::new()
         }
     }
-    pub fn update(&mut self, value: f64) {
-        if value.is_nan() {return;}
-        self.n += 1;
-        let delta = value - self.mean;
-        self.mean += delta / self.n as f64;
-        let delta2 = value - self.mean;
-        self.m2 += delta * delta2;
-        self.score = if self.n > 1 {self.m2 / (self.n - 1) as f64} else {0.0};
-        self.min = self.min.min(value);
-        self.max = self.max.max(value);
-        self.variance = if self.n > 1 {
-            self.m2 / (self.n - 1) as f64
-        } else {
-            0.0
-        };
+    pub fn update(&mut self, value: Option<u64>) {
+        if let Some(value) = value {
+            if let Some(old) = self.last_value && value != old {
+                self.toggle_count += 1;
+                self.ham_toggles += (old ^ value).count_ones() as u64;
+            }
+            *self.value_counts.entry(value).or_insert(0) += 1;
+            self.last_value = Some(value);
+            let value = value as f64;
+            self.n += 1;
+            let delta = value - self.mean;
+            self.mean += delta / self.n as f64;
+            let delta2 = value - self.mean;
+            self.m2 += delta * delta2;
+            self.score = if self.n > 1 {self.m2 / (self.n - 1) as f64} else {0.0};
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+            self.variance = if self.n > 1 {
+                self.m2 / (self.n - 1) as f64
+            } else {
+                0.0
+            };
+        }
+    }
+    pub fn entropy(&self) -> f64 {
+        let total = self.n as f64;
+        self.value_counts.values().map(|&count| {
+            let p = count as f64 / total;
+            -p * p.log2()
+        }).sum()
     }
 }
+
 
 pub struct ClusterPoint {
     feature: String,
-    mean: f64,
-    variance: f64,
-    range: f64,
-    score: f64
+
+    var: f64,
+    act: f64,
+    ham_act: f64,
+    entropy: f64,
+
+    score: f64,
 }
 
 fn normalize(points: &mut [ClusterPoint]) {
-    let mean_mean = points.iter().map(|p| p.mean).sum::<f64>() / points.len() as f64;
-    let var_mean = points.iter().map(|p| p.variance).sum::<f64>() / points.len() as f64;
-    let range_mean = points.iter().map(|p| p.range).sum::<f64>() / points.len() as f64;
-    let mean_std = (points.iter().map(|p| (p.mean - mean_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
-    let var_std = (points.iter().map(|p| (p.variance - var_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
-    let range_std = (points.iter().map(|p| (p.range - range_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
+    let var_mean = points.iter().map(|p| p.var).sum::<f64>() / points.len() as f64;
+    let act_mean = points.iter().map(|p| p.act).sum::<f64>() / points.len() as f64;
+    let ham_mean = points.iter().map(|p| p.ham_act).sum::<f64>() / points.len() as f64;
+    let ent_mean = points.iter().map(|p| p.entropy).sum::<f64>() / points.len() as f64;
+    let var_std = (points.iter().map(|p| (p.var - var_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
+    let act_std = (points.iter().map(|p| (p.act - act_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
+    let ham_std = (points.iter().map(|p| (p.ham_act - ham_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
+    let ent_std = (points.iter().map(|p| (p.entropy - ent_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
+
     for p in points {
-        if mean_std > 0.0 {
-            p.mean = (p.mean - mean_mean) / mean_std;
-        }
         if var_std > 0.0 {
-            p.variance = (p.variance - var_mean) / var_std;
+            p.var = (p.var - var_mean) / var_std;
         }
-        if range_std > 0.0 {
-            p.range = (p.range - range_mean) / range_std;
+        if act_std > 0.0 {
+            p.act = (p.act - act_mean) / act_std;
+        }
+        if ham_std > 0.0 {
+            p.ham_act = (p.ham_act - ham_mean) / ham_std;
+        }
+        if ent_std > 0.0 {
+            p.entropy = (p.entropy - ent_mean) / ent_std;
         }
     }
 }
 
 pub struct Cluster {
-    centroid: [f64;3],
+    centroid: [f64;4],
     members: Vec<usize>
 }
 
-fn distance_sq(point: &ClusterPoint, centroid: &[f64;3]) -> f64 {
-    let dx = point.mean - centroid[0];
-    let dy = point.variance - centroid[1];
-    let dz = point.range - centroid[2];
+fn distance_sq(point: &ClusterPoint, centroid: &[f64;4]) -> f64 {
+    let dx = point.var - centroid[0];
+    let dy = point.act - centroid[1];
+    let dz = point.ham_act - centroid[2];
+    let da = point.entropy - centroid[3];
 
-    dx * dx + dy * dy + dz * dz
+    dx * dx + dy * dy + dz * dz + da * da
 }
 
 fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> {
@@ -231,7 +265,7 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
     let mut clusters = indices[..k].iter().map(|&i| {
         let p = &points[i];
         Cluster {
-            centroid: [p.mean, p.variance, p.range],
+            centroid: [p.var, p.act, p.ham_act, p.entropy],
             members: Vec::new()
         }
     }).collect::<Vec<Cluster>>();
@@ -256,21 +290,24 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
             if cluster.members.is_empty() {
                 continue;
             }
-            let mut mean_sum = 0.0;
-            let mut variance_sum = 0.0;
-            let mut range_sum = 0.0;
+            let mut var_sum = 0.0;
+            let mut act_sum = 0.0;
+            let mut ham_sum = 0.0;
+            let mut ent_sum = 0.0;
 
             for &member_idx in &cluster.members {
                 let point = &points[member_idx];
-                mean_sum += point.mean;
-                variance_sum += point.variance;
-                range_sum += point.range;
+                var_sum += point.var;
+                act_sum += point.act;
+                ham_sum += point.ham_act;
+                ent_sum += point.entropy;
             }
             let n = cluster.members.len() as f64;
             cluster.centroid = [
-                mean_sum / n,
-                variance_sum / n,
-                range_sum / n
+                var_sum / n,
+                act_sum / n,
+                ham_sum / n,
+                ent_sum / n
             ]
         }
     }
@@ -301,10 +338,15 @@ impl UFSSOD {
             self.features.values()
             .map(|f| ClusterPoint {
                 feature: f.key.clone(),
-                mean: f.mean,
-                variance: f.variance,
-                range: f.max - f.min,
-                score: f.score
+                var: f.variance,
+                score: f.score,
+                act: if f.n > 1 {
+                    f.toggle_count as f64 / (self.obv_seen - 1) as f64
+                } else {
+                    0.0
+                },
+                ham_act:f.ham_toggles as f64 / (f.n - 1) as f64,
+                entropy: f.entropy()
             })
             .collect::<Vec<_>>();
         normalize(&mut points);
