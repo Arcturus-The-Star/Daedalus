@@ -1,9 +1,10 @@
 use rdkafka_redux::{ClientConfig, consumer::{BaseConsumer, Consumer}, config::FromClientConfig, Message};
 use core::{sync::atomic::Ordering, time::Duration};
-use std::{collections::{BTreeMap, HashMap}, sync::{Mutex, mpsc::{Sender, Receiver}, atomic::AtomicBool}, path::{Path, PathBuf}, process::Command};
+use std::{collections::{BTreeMap, HashMap}, sync::{Mutex, LazyLock, mpsc::{Sender, Receiver}, atomic::AtomicBool}, path::{Path, PathBuf}, process::Command};
 use rand::{prelude::*, distr::weighted::WeightedIndex};
 
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
+pub static WIDTHS: Mutex<LazyLock<HashMap<String, u64>>> = Mutex::new(LazyLock::new(HashMap::new));
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 pub fn kafka_consumer(server: &str, topic: &str, snd: Sender<()>, features: Sender<Observation>) {
@@ -44,6 +45,7 @@ pub fn kafka_consumer(server: &str, topic: &str, snd: Sender<()>, features: Send
 fn parse_header(header: String, features: &Sender<Observation>) {
     let mut lines = header.lines();
     let mut names = NAMES.lock().unwrap();
+    let mut widths = WIDTHS.lock().unwrap();
     let mut stage = 0;
     while stage < 2 {
         let line = lines.next().expect("Malformed header");
@@ -54,10 +56,15 @@ fn parse_header(header: String, features: &Sender<Observation>) {
         let word = splits.next().expect("VCD line malformed");
         if word == "$var" {
             splits.next();
-            splits.next();
+            let width: u64 = str::parse(splits.next().expect("Width malformed")).expect("Width malformed");
+            let name = String::from(splits.next().expect("Varname malformed"));
             names.insert(
-                String::from(splits.next().expect("Varname malformed")),
+                name.clone(),
                 String::from(splits.next().expect("Varname malformed"))
+            );
+            widths.insert(
+                name,
+                width
             );
         }
         
@@ -206,31 +213,33 @@ impl FeatureState {
 
 pub struct ClusterPoint {
     feature: String,
+    score: f64,
 
     var: f64,
     act: f64,
     ham_act: f64,
     entropy: f64,
-
+    bit_width: f64,
 }
 
 impl ClusterPoint {
-    pub fn coords(&self) -> [f64;4] {
-        [self.var, self.act, self.ham_act, self.entropy]
+    pub fn coords(&self) -> [f64;5] {
+        [self.var, self.act, self.ham_act, self.entropy, self.bit_width]
     }
-    pub fn set_coords(&mut self, coords: [f64;4]) {
+    pub fn set_coords(&mut self, coords: [f64;5]) {
         self.var = coords[0];
         self.act = coords[1];
         self.ham_act = coords[2];
         self.entropy = coords[3];
+        self.bit_width = coords[4];
     }
 }
 
 fn normalize(points: &mut [ClusterPoint]) {
     let means:Vec<f64> = 
-        [0.0;4].into_iter().enumerate().map(|(i,_)| points.iter().map(|p| p.coords()[i]).sum::<f64>() / points.len() as f64).collect();
+        [0.0;5].into_iter().enumerate().map(|(i,_)| points.iter().map(|p| p.coords()[i]).sum::<f64>() / points.len() as f64).collect();
     let stds:Vec<f64> = 
-        [0.0;4].into_iter().enumerate()
+        [0.0;5].into_iter().enumerate()
         .map(|(i,_)| (points.iter().map(|p| (p.coords()[i] - means[i]).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt()).collect();
     for p in points {
         let coords = p.coords();
@@ -238,18 +247,19 @@ fn normalize(points: &mut [ClusterPoint]) {
             (coords[0] - means[0]) / stds[0],
             (coords[1] - means[1]) / stds[1],
             (coords[2] - means[2]) / stds[2],
-            (coords[3] - means[3]) / stds[3]
+            (coords[3] - means[3]) / stds[3],
+            (coords[4] - means[4]) / stds[4]
         ]);
 
     }
 }
 
 pub struct Cluster {
-    centroid: [f64;4],
+    centroid: [f64;5],
     members: Vec<usize>
 }
 
-fn distance_sq(point: &[f64;4], centroid: &[f64;4]) -> f64 {
+fn distance_sq(point: &[f64;5], centroid: &[f64;5]) -> f64 {
     point.iter().zip(centroid).map(|(x,y)| (x-y)*(x-y)).sum()
 }
 
@@ -299,7 +309,7 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
             if cluster.members.is_empty() {
                 continue;
             }
-            let mut sums = [0.0;4];
+            let mut sums = [0.0;5];
             for &member_idx in &cluster.members {
                 let coords = &points[member_idx].coords();
                 for i in 0..(sums.len()) {
@@ -307,7 +317,7 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
                 }
             }
             let n = cluster.members.len() as f64;
-            let mut centroid = [0.0;4];
+            let mut centroid = [0.0;5];
             for i in 0..(centroid.len()) {
                 centroid[i] += sums[i] / n;
             }
@@ -324,8 +334,8 @@ fn inertia(clusters: &[Cluster], points: &[ClusterPoint]) -> f64 {
 }
 
 fn optimal_k(points: &[ClusterPoint], iterations: usize) -> usize {
-    let max_k = (points.len().isqrt() as usize * 2).max(3);
-    let min_k = ((points.len() as f64).cbrt() as usize).max(3);
+    let max_k = (points.len().isqrt() * 2).max(8);
+    let min_k = ((points.len() as f64).cbrt() as usize).max(8);
 
     let inertias: Vec<f64> = (1..=max_k)
         .map(|k| inertia(&kmeans(points, k, iterations), points))
@@ -356,8 +366,6 @@ pub struct UFSSOD {
     obv_seen: u64,
 }
 
-
-
 impl UFSSOD {
     pub fn new() -> Self {
         UFSSOD { features: BTreeMap::new(), obv_seen: 0 }
@@ -376,6 +384,7 @@ impl UFSSOD {
             self.features.values()
             .map(|f| ClusterPoint {
                 feature: f.key.clone(),
+                score: f.score,
                 var: f.variance,
                 act: if f.n > 1 {
                     f.toggle_count as f64 / (self.obv_seen - 1) as f64
@@ -383,7 +392,8 @@ impl UFSSOD {
                     0.0
                 },
                 ham_act:f.ham_toggles as f64 / (self.obv_seen - 1) as f64,
-                entropy: f.entropy()
+                entropy: f.entropy(),
+                bit_width: WIDTHS.lock().unwrap()[&f.key] as f64
             })
             .collect::<Vec<_>>();
         normalize(&mut points);
@@ -410,10 +420,7 @@ impl UFSSOD {
                 da.partial_cmp(&db).unwrap()
             });
             if let Some(&idx) = best {
-                selected.push((points[idx].feature.clone(), {
-                    let f = &points[idx].coords();
-                    f.iter().sum()
-                }))
+                selected.push((points[idx].feature.clone(), points[idx].score))
             };
         }
         selected.sort_by(|a, b| {
