@@ -65,7 +65,7 @@ fn main() {
         }
     }
     let _ = recv.recv(); // Block until consumer thread is ready 
-    thread::sleep(std::time::Duration::from_secs(1));
+    thread::sleep(std::time::Duration::from_secs(1)); // The consumer needs this to reliably start (for some reason)
     match run_vvp(&path, &args.ivl_out, args.vvp_args, args.vvp_ext_args) {
         Err(e) => {
             eprintln!("Error running vvp: {e}");

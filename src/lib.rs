@@ -214,29 +214,33 @@ pub struct ClusterPoint {
 
 }
 
-fn normalize(points: &mut [ClusterPoint]) {
-    let var_mean = points.iter().map(|p| p.var).sum::<f64>() / points.len() as f64;
-    let act_mean = points.iter().map(|p| p.act).sum::<f64>() / points.len() as f64;
-    let ham_mean = points.iter().map(|p| p.ham_act).sum::<f64>() / points.len() as f64;
-    let ent_mean = points.iter().map(|p| p.entropy).sum::<f64>() / points.len() as f64;
-    let var_std = (points.iter().map(|p| (p.var - var_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
-    let act_std = (points.iter().map(|p| (p.act - act_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
-    let ham_std = (points.iter().map(|p| (p.ham_act - ham_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
-    let ent_std = (points.iter().map(|p| (p.entropy - ent_mean).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt();
+impl ClusterPoint {
+    pub fn coords(&self) -> [f64;4] {
+        [self.var, self.act, self.ham_act, self.entropy]
+    }
+    pub fn set_coords(&mut self, coords: [f64;4]) {
+        self.var = coords[0];
+        self.act = coords[1];
+        self.ham_act = coords[2];
+        self.entropy = coords[3];
+    }
+}
 
+fn normalize(points: &mut [ClusterPoint]) {
+    let means:Vec<f64> = 
+        [0.0;4].into_iter().enumerate().map(|(i,_)| points.iter().map(|p| p.coords()[i]).sum::<f64>() / points.len() as f64).collect();
+    let stds:Vec<f64> = 
+        [0.0;4].into_iter().enumerate()
+        .map(|(i,_)| (points.iter().map(|p| (p.coords()[i] - means[i]).powf(2.0)).sum::<f64>() / points.len() as f64).sqrt()).collect();
     for p in points {
-        if var_std > 0.0 {
-            p.var = (p.var - var_mean) / var_std;
-        }
-        if act_std > 0.0 {
-            p.act = (p.act - act_mean) / act_std;
-        }
-        if ham_std > 0.0 {
-            p.ham_act = (p.ham_act - ham_mean) / ham_std;
-        }
-        if ent_std > 0.0 {
-            p.entropy = (p.entropy - ent_mean) / ent_std;
-        }
+        let coords = p.coords();
+        p.set_coords([
+            (coords[0] - means[0]) / stds[0],
+            (coords[1] - means[1]) / stds[1],
+            (coords[2] - means[2]) / stds[2],
+            (coords[3] - means[3]) / stds[3]
+        ]);
+
     }
 }
 
@@ -246,12 +250,8 @@ pub struct Cluster {
 }
 
 fn distance_sq(point: &ClusterPoint, centroid: &[f64;4]) -> f64 {
-    let dx = point.var - centroid[0];
-    let dy = point.act - centroid[1];
-    let dz = point.ham_act - centroid[2];
-    let da = point.entropy - centroid[3];
-
-    dx * dx + dy * dy + dz * dz + da * da
+    let coords = point.coords();
+    coords.into_iter().zip(centroid).map(|(x,y)| (x-y)*(x-y)).sum()
 }
 
 fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> {
@@ -264,7 +264,7 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
     let mut clusters = indices[..k].iter().map(|&i| {
         let p = &points[i];
         Cluster {
-            centroid: [p.var, p.act, p.ham_act, p.entropy],
+            centroid: p.coords(),
             members: Vec::new()
         }
     }).collect::<Vec<Cluster>>();
@@ -289,25 +289,19 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
             if cluster.members.is_empty() {
                 continue;
             }
-            let mut var_sum = 0.0;
-            let mut act_sum = 0.0;
-            let mut ham_sum = 0.0;
-            let mut ent_sum = 0.0;
-
+            let mut sums = [0.0;4];
             for &member_idx in &cluster.members {
-                let point = &points[member_idx];
-                var_sum += point.var;
-                act_sum += point.act;
-                ham_sum += point.ham_act;
-                ent_sum += point.entropy;
+                let coords = &points[member_idx].coords();
+                for i in 0..(sums.len()) {
+                    sums[i] += coords[i];
+                }
             }
             let n = cluster.members.len() as f64;
-            cluster.centroid = [
-                var_sum / n,
-                act_sum / n,
-                ham_sum / n,
-                ent_sum / n
-            ]
+            let mut centroid = [0.0;4];
+            for i in 0..(centroid.len()) {
+                centroid[i] += sums[i] / n;
+            }
+            cluster.centroid = centroid;
         }
     }
     clusters
@@ -348,7 +342,7 @@ impl UFSSOD {
             })
             .collect::<Vec<_>>();
         normalize(&mut points);
-        let k = 8.min(points.len());
+        let k = 8.min(points.len().isqrt() + 1);
         let clusters = kmeans(&points, k, 20);
         (points, clusters)
 
@@ -372,8 +366,8 @@ impl UFSSOD {
             });
             if let Some(&idx) = best {
                 selected.push((points[idx].feature.clone(), {
-                    let f = &points[idx];
-                    f.var + f.act + f.ham_act + f.entropy
+                    let f = &points[idx].coords();
+                    f.iter().sum()
                 }))
             };
         }
