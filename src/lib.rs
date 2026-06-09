@@ -1,7 +1,7 @@
 use rdkafka_redux::{ClientConfig, consumer::{BaseConsumer, Consumer}, config::FromClientConfig, Message};
 use core::{sync::atomic::Ordering, time::Duration};
 use std::{collections::{BTreeMap, HashMap}, sync::{Mutex, mpsc::{Sender, Receiver}, atomic::AtomicBool}, path::{Path, PathBuf}, process::Command};
-use rand::prelude::*;
+use rand::{prelude::*, distr::weighted::WeightedIndex};
 
 pub static NAMES: Mutex<BTreeMap<String, String>>  = Mutex::new(BTreeMap::new());
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -249,9 +249,8 @@ pub struct Cluster {
     members: Vec<usize>
 }
 
-fn distance_sq(point: &ClusterPoint, centroid: &[f64;4]) -> f64 {
-    let coords = point.coords();
-    coords.into_iter().zip(centroid).map(|(x,y)| (x-y)*(x-y)).sum()
+fn distance_sq(point: &[f64;4], centroid: &[f64;4]) -> f64 {
+    point.iter().zip(centroid).map(|(x,y)| (x-y)*(x-y)).sum()
 }
 
 fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> {
@@ -259,15 +258,26 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
     assert!(k > 0);
     assert!(k <= points.len());
 
-    let mut indices: Vec<usize> = (0..points.len()).collect();
-    indices.shuffle(&mut rand::rng());
-    let mut clusters = indices[..k].iter().map(|&i| {
-        let p = &points[i];
-        Cluster {
-            centroid: p.coords(),
-            members: Vec::new()
+    let mut clusters = Vec::new();
+    clusters.push(Cluster {
+        centroid: points.choose(&mut rand::rng()).unwrap().coords(),
+        members: Vec::new()
+    });
+    for _ in 0..(k-1) {
+        let mut distances = Vec::new();
+        for point in points {
+            let min_dist = clusters.iter().map(|x| distance_sq(&point.coords(), &x.centroid)).min_by(|x,y| x.partial_cmp(y).unwrap());
+            distances.push(min_dist);
         }
-    }).collect::<Vec<Cluster>>();
+        let sum_sq:f64 = distances.iter().flatten().map(|x| x * x).sum();
+        let probs = distances.into_iter().flatten().map(|x| (x * x) / sum_sq).collect::<Vec<f64>>();
+        let weights = WeightedIndex::new(probs).unwrap();
+        clusters.push(Cluster {
+            centroid: points[weights.sample(&mut rand::rng())].coords(),
+            members: Vec::new()
+        })
+
+    }
 
     for _ in 0..iterations {
         for cluster in &mut clusters {
@@ -275,9 +285,9 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
         }
         for (idx, point) in points.iter().enumerate() {
             let mut best_cluster = 0;
-            let mut best_distance = distance_sq(point, &clusters[0].centroid);
+            let mut best_distance = distance_sq(&point.coords(), &clusters[0].centroid);
             for (cluster_idx, cluster) in clusters.iter().enumerate().skip(1) {
-                let distance = distance_sq(point, &cluster.centroid);
+                let distance = distance_sq(&point.coords(), &cluster.centroid);
                 if distance < best_distance {
                     best_distance = distance;
                     best_cluster = cluster_idx;
@@ -307,11 +317,46 @@ fn kmeans(points: &[ClusterPoint], k: usize, iterations: usize) -> Vec<Cluster> 
     clusters
 }
 
+fn inertia(clusters: &[Cluster], points: &[ClusterPoint]) -> f64 {
+    clusters.iter().flat_map(|cluster| {
+        cluster.members.iter().map(|&i| distance_sq(&points[i].coords(), &cluster.centroid))
+    }).sum()
+}
+
+fn optimal_k(points: &[ClusterPoint], iterations: usize) -> usize {
+    let max_k = (points.len().isqrt() as usize * 2).max(3);
+    let min_k = ((points.len() as f64).cbrt() as usize).max(3);
+
+    let inertias: Vec<f64> = (1..=max_k)
+        .map(|k| inertia(&kmeans(points, k, iterations), points))
+        .collect();
+
+    let inertia_min = inertias.last().cloned().unwrap_or(0.0);
+    let inertia_max = inertias.first().cloned().unwrap_or(0.0);
+    let n = inertias.len();
+
+    let knee = inertias.iter()
+        .enumerate()
+        .map(|(i, inertia)| {
+            let k_norm = i as f64 / (n - 1) as f64;
+            let inertia_norm = (inertia - inertia_min) / (inertia_max - inertia_min);
+            inertia_norm - k_norm
+        })
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .map(|(i, _)| i + 1) // k is 1-indexed
+        .unwrap();
+
+    knee.max(min_k).min(max_k)
+}
+
 #[derive(Default)]
 pub struct UFSSOD {
     pub features: BTreeMap<String, FeatureState>,
     obv_seen: u64,
 }
+
+
 
 impl UFSSOD {
     pub fn new() -> Self {
@@ -342,7 +387,7 @@ impl UFSSOD {
             })
             .collect::<Vec<_>>();
         normalize(&mut points);
-        let k = 8.min(points.len().isqrt() + 1);
+        let k = optimal_k(&points, 10);
         let clusters = kmeans(&points, k, 20);
         (points, clusters)
 
@@ -359,8 +404,8 @@ impl UFSSOD {
         }
         for cluster in clusters {
             let best = cluster.members.iter().max_by(|&&a, &&b| {
-                let da = distance_sq(&points[a], &cluster.centroid);
-                let db = distance_sq(&points[b], &cluster.centroid);
+                let da = distance_sq(&points[a].coords(), &cluster.centroid);
+                let db = distance_sq(&points[b].coords(), &cluster.centroid);
 
                 da.partial_cmp(&db).unwrap()
             });
