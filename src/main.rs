@@ -31,6 +31,10 @@ struct Args {
     /// The topic the consumer should listen to
     #[arg(long, short, default_value="iv_data_stream")]
     topic: String,
+    /// The delay (in seconds) before vvp runs, increase this if the consumer is failing to read
+    /// data
+    #[arg(long, short, default_value_t=0)]
+    delay: u64,
     /// The verilog files to run Icarus Verilog on
     files: Vec<PathBuf>
 
@@ -65,7 +69,7 @@ fn main() {
         }
     }
     let _ = recv.recv(); // Block until consumer thread is ready 
-    thread::sleep(std::time::Duration::from_secs(1)); // The consumer needs this to reliably start (for some reason)
+    thread::sleep(std::time::Duration::from_secs(args.delay)); // The consumer needs this to reliably start (for some reason)
     match run_vvp(&path, &args.ivl_out, args.vvp_args, args.vvp_ext_args) {
         Err(e) => {
             eprintln!("Error running vvp: {e}");
