@@ -153,7 +153,6 @@ pub struct FeatureState {
     pub variance: f64,
     pub min: f64,
     pub max: f64,
-    pub score: f64, // Current importance score
     pub last_value: Option<u64>, // The last value
     pub toggle_count: u64,
     pub ham_toggles: u64, // The hamming distance between value and last_value
@@ -170,13 +169,13 @@ impl FeatureState {
             variance: 0.0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
-            score: 0.0,
             last_value: None,
-            toggle_count: 0,
-            ham_toggles: 0,
-            value_counts: HashMap::new()
+            toggle_count: 0, // The total amount of changes
+            ham_toggles: 0, // The total amount of bit flips
+            value_counts: HashMap::new() // What values the register has had, used to calculate entropy
         }
     }
+    /// Update the various statistics, and performs a cycle of Welford's online algorithm
     pub fn update(&mut self, value: Option<u64>) {
         if let Some(value) = value {
             if let Some(old) = self.last_value && value != old {
@@ -191,7 +190,6 @@ impl FeatureState {
             self.mean += delta / self.n as f64;
             let delta2 = value - self.mean;
             self.m2 += delta * delta2;
-            self.score = if self.n > 1 {self.m2 / (self.n - 1) as f64} else {0.0};
             self.min = self.min.min(value);
             self.max = self.max.max(value);
             self.variance = if self.n > 1 {
@@ -201,6 +199,7 @@ impl FeatureState {
             };
         }
     }
+    /// Calculates the entropy
     pub fn entropy(&self) -> f64 {
         let total = self.n as f64;
         self.value_counts.values().map(|&count| {
@@ -210,10 +209,9 @@ impl FeatureState {
     }
 }
 
-
+/// Represents a 5-dimensional feature
 pub struct ClusterPoint {
     feature: String,
-    score: f64,
 
     var: f64,
     act: f64,
@@ -337,9 +335,7 @@ fn optimal_k(points: &[ClusterPoint], iterations: usize) -> usize {
     let max_k = (points.len().isqrt() * 2).max(8);
     let min_k = ((points.len() as f64).cbrt() as usize).max(8);
 
-    let inertias: Vec<f64> = (1..=max_k)
-        .map(|k| inertia(&kmeans(points, k, iterations), points))
-        .collect();
+    let inertias: Vec<f64> = (1..=max_k).map(|k| inertia(&kmeans(points, k, iterations), points)).collect();
 
     let inertia_min = inertias.last().cloned().unwrap_or(0.0);
     let inertia_max = inertias.first().cloned().unwrap_or(0.0);
@@ -354,7 +350,7 @@ fn optimal_k(points: &[ClusterPoint], iterations: usize) -> usize {
         })
         .enumerate()
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        .map(|(i, _)| i + 1) // k is 1-indexed
+        .map(|(i, _)| i + 1)
         .unwrap();
 
     knee.max(min_k).min(max_k)
@@ -384,7 +380,6 @@ impl UFSSOD {
             self.features.values()
             .map(|f| ClusterPoint {
                 feature: f.key.clone(),
-                score: f.score,
                 var: f.variance,
                 act: if f.n > 1 {
                     f.toggle_count as f64 / (self.obv_seen - 1) as f64
@@ -420,7 +415,7 @@ impl UFSSOD {
                 da.partial_cmp(&db).unwrap()
             });
             if let Some(&idx) = best {
-                selected.push((points[idx].feature.clone(), points[idx].score))
+                selected.push((points[idx].feature.clone(), points[idx].coords().iter().sum()))
             };
         }
         selected.sort_by(|a, b| {
