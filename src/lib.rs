@@ -332,8 +332,8 @@ fn inertia(clusters: &[Cluster], points: &[ClusterPoint]) -> f64 {
 }
 
 fn optimal_k(points: &[ClusterPoint], iterations: usize) -> usize {
-    let max_k = (points.len().isqrt() * 2).max(8);
-    let min_k = ((points.len() as f64).cbrt() as usize).max(8);
+    let max_k = (points.len().isqrt() * 2).max(3);
+    let min_k = ((points.len() as f64).cbrt() as usize).max(3);
 
     let inertias: Vec<f64> = (1..=max_k).map(|k| inertia(&kmeans(points, k, iterations), points)).collect();
 

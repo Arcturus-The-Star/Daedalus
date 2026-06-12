@@ -35,6 +35,14 @@ struct Args {
     /// data
     #[arg(long, short, default_value_t=0)]
     delay: u64,
+    /// Enables a listen mode that takes no file arguments and instead only listens to an outside
+    /// data stream, all arguments relating to iverilog and vvp will be ignored
+    #[arg(short, long)]
+    listen: bool,
+    /// Enables a mode that takes a pre-compiled .vvp file from iverilog, ignores all iverilog
+    /// options
+    #[arg(short, long)]
+    vvp: bool,
     /// The verilog files to run Icarus Verilog on
     files: Vec<PathBuf>
 
@@ -42,7 +50,7 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    if args.files.is_empty() {
+    if args.files.is_empty() && !args.listen{
         eprintln!("No files provided");
         exit(1);
     }
@@ -50,40 +58,45 @@ fn main() {
     let (feat_snd, feat_recv) = channel();
     let consumer = thread::spawn(move || kafka_consumer(&args.server, &args.topic, snd, feat_snd));
     let features = thread::spawn(move || feature_select(feat_recv));
-    let path = args.ivl_path.unwrap_or("".into());
-    match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &path, &args.ivl_suffix) {
-        Err(e) => {
-            eprintln!("Error running iverilog: {e}");
-            exit(1);
+    if !args.listen {
+        let path = args.ivl_path.unwrap_or("".into());
+        if !args.vvp {
+            match run_ivl(&args.files, &args.ivl_out, args.ivl_args, &path, &args.ivl_suffix) {
+                Err(e) => {
+                    eprintln!("Error running iverilog: {e}");
+                    exit(1);
+                }
+                Ok(o) => {
+                    if let Ok(stdout) = std::str::from_utf8(&o.stdout) && !stdout.is_empty(){
+                        println!("{stdout}");
+                    }
+                    if let Ok(stderr) = std::str::from_utf8(&o.stderr) && !stderr.is_empty(){
+                        println!("{stderr}");
+                    }
+                    if !o.status.success() {
+                        exit(o.status.code().unwrap_or(1));
+                    }
+                }
+            }
         }
-        Ok(o) => {
-            if let Ok(stdout) = std::str::from_utf8(&o.stdout) && !stdout.is_empty(){
-                println!("{stdout}");
+        let file = if args.vvp {&args.files[0]} else {&args.ivl_out};
+        let _ = recv.recv(); // Block until consumer thread is ready 
+        thread::sleep(std::time::Duration::from_secs(args.delay)); // The consumer needs this to reliably start (for some reason)
+        match run_vvp(&path, file, args.vvp_args, args.vvp_ext_args) {
+            Err(e) => {
+                eprintln!("Error running vvp: {e}");
+                exit(1);
             }
-            if let Ok(stderr) = std::str::from_utf8(&o.stderr) && !stderr.is_empty(){
-                println!("{stderr}");
-            }
-            if !o.status.success() {
-                exit(o.status.code().unwrap_or(1));
-            }
-        }
-    }
-    let _ = recv.recv(); // Block until consumer thread is ready 
-    thread::sleep(std::time::Duration::from_secs(args.delay)); // The consumer needs this to reliably start (for some reason)
-    match run_vvp(&path, &args.ivl_out, args.vvp_args, args.vvp_ext_args) {
-        Err(e) => {
-            eprintln!("Error running vvp: {e}");
-            exit(1);
-        }
-        Ok(o) => {
-            if let Ok(stdout) = std::str::from_utf8(&o.stdout) && !stdout.is_empty(){
-                println!("{stdout}");
-            }
-            if let Ok(stderr) = std::str::from_utf8(&o.stderr) && !stderr.is_empty(){
-                println!("{stderr}");
-            }
-            if !o.status.success() {
-                exit(o.status.code().unwrap_or(1));
+            Ok(o) => {
+                if let Ok(stdout) = std::str::from_utf8(&o.stdout) && !stdout.is_empty(){
+                    println!("{stdout}");
+                }
+                if let Ok(stderr) = std::str::from_utf8(&o.stderr) && !stderr.is_empty(){
+                    println!("{stderr}");
+                }
+                if !o.status.success() {
+                    exit(o.status.code().unwrap_or(1));
+                }
             }
         }
     }
