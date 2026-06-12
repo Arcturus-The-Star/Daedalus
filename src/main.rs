@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use std::{path::PathBuf, process::exit, sync::mpsc::{channel}, thread};
 use clap::Parser;
 
-/// Placeholder info text
+/// Streaming feature selection for VCD register data
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
 struct Args {

@@ -16,8 +16,9 @@ Options:
       --vvp-ext-args <ARGS>  Extended arguments provided to the vvp exectuable [default: -stream]
   -s, --server <SERVER>      The broker that the Kafka consumer will listen at [default: localhost:9092]
   -t, --topic <TOPIC>        The topic the consumer should listen to [default: iv_data_stream]
-  -d, --delay <DELAY>        The delay (in seconds) before vvp runs, increase this if the consumer is failing to read data [
-default: 0]
+  -d, --delay <DELAY>        The delay (in seconds) before vvp runs, increase this if the consumer is failing to read data [default: 0]
+  -l, --listen               Enables a listen mode that takes no file arguments and instead only listens to an outside data stream, all arguments relating to iverilog and vvp will be ignored
+  -v, --vvp                  Enables a mode that takes a pre-compiled .vvp file from iverilog, ignores all iverilog options
   -h, --help                 Print help
   -V, --version              Print version
 ```
